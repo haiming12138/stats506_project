@@ -1,0 +1,121 @@
+```{r}
+library(rstan)
+```
+
+
+## GDP
+```{r}
+# rename columns, and only keep year
+gdp <- read.csv('./data/NGSP.csv')
+names(gdp)[-1] <- sub('NGSP', '', names(gdp)[-1])
+gdp$DATE <- format(as.Date(gdp$DATE), "%Y")
+
+# medical data combine DC and MD
+gdp$DC <- gdp$DC + gdp$MD
+gdp <- gdp[, -22]
+nlevels(as.factor(names(gdp)[2:51]))
+```
+
+```{r}
+# prepare data as matrix of [Year, State]
+lv_year <- levels(as.factor(gdp$DATE))
+lv_state <- levels(as.factor(names(gdp)[2:51]))
+gdp_mat <- as.matrix(gdp[1:6, 2:51])
+```
+
+
+## Medicare Data
+```{r}
+# obtain medicare records fro 2017 ~ 2022
+medical <- data.frame(row.names = c('state', 'payment'))
+for (year in gdp$DATE) {
+  fname <- paste0('./data/Medicare_OP_Hospitals_by_Provider_and_Service_', year, '.csv')
+  df <- read.csv(fname)[c(5, 16)]
+  df <- na.omit(df)
+  names(df) <- c('state', 'payment')
+  df$state <- as.integer(factor(df$state, levels = lv_state))
+  df$year <- as.integer(factor(year, levels = lv_year))
+  medical <- rbind(medical, df)
+}
+```
+
+
+## STAN model
+```{r}
+stan_code <- '
+data {
+  int<lower=0> N;               // Number of observations
+  int<lower=0> S;               // Number of states
+  int<lower=0> T;               // Number of years
+  int<lower=1, upper=S> state[N];  // State index for each hospital
+  int<lower=1, upper=T> year[N];   // Year index for each observation
+  real payment[N];    // Outpatient payment for each hospital
+  matrix[T, S] gdp;              // GDP for each year and state
+}
+
+parameters {
+  real mu_alpha;                 // Overall mean for outpatient payments
+  real<lower=0> sigma_alpha;     // Standard deviation of state-level means
+  real<lower=0> sigma_beta;      // Standard deviation of year-level effects
+  real<lower=0> sigma_epsilon;   // Measurement error variance
+
+  vector[S] mu_state;            // Mean outpatient payments by state
+  vector[T] beta_year;           // Yearly deviations from the mean
+  vector[S] slope_gdp;           // State-level slopes for GDP effect
+  real<lower=0> sigma_state[S];  // State-level standard deviations
+}
+
+model {
+  // Priors
+  mu_alpha ~ normal(0, 10);
+  sigma_alpha ~ cauchy(0, 2);
+  sigma_beta ~ cauchy(0, 2);
+  sigma_epsilon ~ cauchy(0, 2);
+  mu_state ~ normal(mu_alpha, sigma_alpha);
+  beta_year ~ normal(0, sigma_beta);
+  slope_gdp ~ normal(0, 10);
+
+  for (s in 1:S) {
+    sigma_state[s] ~ cauchy(0, 2);
+  }
+
+  // Likelihood
+  for (n in 1:N) {
+    real gdp_effect = slope_gdp[state[n]] * gdp[year[n], state[n]];
+    payment[n] ~ normal(
+      mu_state[state[n]] + beta_year[year[n]] + gdp_effect,
+      sigma_state[state[n]]
+    );
+  }
+}
+'
+
+stan_data <- list(
+  N = nrow(medical),
+  S = 50,
+  T = 6,
+  state = medical$state,
+  year = medical$year,
+  payment = medical$payment,
+  gdp = gdp_mat
+)
+```
+
+```{r}
+
+fit <- stan(
+  model_code = stan_code,   # Stan code as defined above
+  data = stan_data,         # Prepared data list
+  iter = 4000,              # Number of iterations
+  chains = 1,               # Number of chains
+  control = list(adapt_delta = 0.95),  # Adjust for model stability
+  cores = 4
+)
+```
+
+
+
+
+
+
+
