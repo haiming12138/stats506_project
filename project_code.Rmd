@@ -1,0 +1,110 @@
+```{r}
+library(tidyverse)
+library(reshape2)
+library(car)
+```
+
+
+## GDP
+```{r}
+# rename columns, and only keep year
+gdp <- read.csv('./data/NGSP.csv')
+names(gdp)[-1] <- sub('NGSP', '', names(gdp)[-1])
+gdp$DATE <- format(as.Date(gdp$DATE), '%Y')
+colnames(gdp)[colnames(gdp) == 'DATE'] <- 'year'
+
+# medical data combine DC and MD
+gdp$DC <- gdp$DC + gdp$MD
+gdp <- gdp[, -22]
+nlevels(as.factor(names(gdp)[2:51]))
+```
+
+```{r}
+# keep level mapping
+lv_year <- levels(as.factor(gdp$year))
+lv_state <- levels(as.factor(names(gdp)[2:51]))
+```
+
+
+## Medicare Data
+```{r}
+# obtain medicare records fro 2017 ~ 2022
+medical <- data.frame(row.names = c('state', 'payment'))
+for (year in gdp$year) {
+  fname <- paste0('./data/Medicare_OP_Hospitals_by_Provider_and_Service_', year, '.csv')
+  df <- read.csv(fname)[c(5, 16)]
+  df <- na.omit(df)
+  names(df) <- c('state', 'payment')
+  df$state <- as.integer(factor(df$state, levels = lv_state))
+  df$year <- as.integer(factor(year, levels = lv_year))
+  medical <- rbind(medical, df)
+}
+
+# create group mean, variance by state and year
+medical <- medical %>% group_by(year, state) %>%
+  summarise(
+    mean = mean(payment),
+    std = sd(payment)
+  ) %>%
+  ungroup() %>%
+  select(year, state, mean, std)
+```
+
+## Combine GDP and medical data
+```{r}
+# reshape dataframe for regression
+gdp <- melt(gdp, id.vars = 'year', variable.name = 'state', value.name = 'gdp')
+gdp$state <- as.integer(factor(gdp$state, levels = lv_state))
+gdp$year <- as.integer(factor(gdp$year, levels = lv_year))
+
+df <- merge(gdp, medical) %>% select(-state)
+```
+
+## linear regression model - treat year as continuous
+```{r}
+mod1 <- lm(gdp ~ year + I(std / mean), data = df)
+summary(mod1)
+```
+F test
+```{r}
+anova(mod1)
+```
+
+```{r}
+plot(mod1)
+```
+
+## linear regression model - treat year as factor
+```{r}
+df1 <- df
+df1$year <- as.factor(df1$year)
+mod2 <- lm(gdp ~ year + I(std / mean), data = df1)
+summary(mod2)
+```
+```{r}
+anova(mod2)
+```
+
+## linear regression model - treat year as factor, interactions with std/mean
+```{r}
+mod3 <- lm(gdp ~ year + I(std / mean) * year, data = df1)
+summary(mod3)
+```
+```{r}
+anova(mod3)
+```
+## linear regression model - treat year as continuous, interactions with std/mean
+```{r}
+mod4 <- lm(gdp ~ year + I(std / mean) * year, data = df)
+summary(mod4)
+```
+```{r}
+anova(mod4)
+```
+
+
+
+
+
+
+
